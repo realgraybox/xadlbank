@@ -14,17 +14,21 @@ Features
 - Reads HMI/AdLib .BNK soundbank files directly.
 - Writes edited banks directly back to .BNK format.
 - No intermediate text file is required.
-- Displays instrument number, MIDI index, name, and OPL parameter values.
+- Displays instrument number, data record index, name, and OPL parameter
+  values.
 - Edits instrument names.
 - Edits the available instrument parameters.
 - Shows raw BNK values in the inspector.
-- Provides immediate OPL2 preview through the external opl2play program.
+- Provides immediate OPL2 preview (single note or chord) through the
+  external mop program.
+- Built-in file chooser for loading another bank without restarting.
 - Supports keyboard navigation.
 - Supports mouse-assisted row selection and scrolling.
 - Supports right-click preview.
 - Supports simultaneous instances for comparing different banks.
 - Uses a simple Xlib interface without a GUI toolkit.
-- Preserves unmodified bank data during load/save round trips.
+- Byte-exact load/save round trips: only the bytes you edit change.
+- Tolerates damaged or unusual banks instead of refusing them.
 - Includes a built-in window icon.
 
 
@@ -34,40 +38,46 @@ Requirements
 - Linux or another Unix-like system with X11.
 - An X11 server and DISPLAY environment.
 - libX11 at build time.
-- opl2play in PATH for instrument preview.
+- mop in PATH for instrument preview.
 
-The program can still be used without opl2play, but the preview function
+The program can still be used without mop, but the preview function
 will not produce sound.
 
 
 Usage
 -----
 
-    xadlbank <soundbank.bnk>
+    xadlbank [soundbank.bnk]
 
 Example:
 
     xadlbank instruments.bnk
 
+Without an argument xadlbank starts empty; press L to pick a bank.
+
 
 Basic controls
 --------------
 
-    Up / Down       Select an instrument
+    Up / Down       Select an instrument / inspector field
     Page Up/Down    Move through the instrument list
-    Left / Right    Select an inspector field
-    Enter           Open the inspector / return to the list
+    Home / End      First / last instrument
+    Left / Right    Switch inspector column
+    Enter / Tab     Open the inspector / return to the list
+    L / l           Load another bank (press twice to discard unsaved changes)
     N / n           Rename the selected instrument
-    P / p / Space   Preview the selected instrument
+    P / p / Space   Preview the selected instrument (one note)
+    Shift+P         Preview the selected instrument as a C major chord
     S / s           Save the bank
     Q / q           Quit
-    Esc             Cancel editing or return from the inspector
+    Esc             Cancel editing, return from the inspector, or quit
 
 Mouse:
 
-    Left button     Select a row or inspector field
-    Mouse wheel     Scroll the list or adjust the selected inspector value
-    Right button    Preview the selected instrument
+    Left button        Select a row or inspector field
+    Mouse wheel        Scroll the list or adjust the selected inspector value
+    Right button       Preview the selected instrument
+    Shift+Right button Chord preview
 
 The exact visible controls are also shown in the status line at the bottom
 of the window.
@@ -93,8 +103,16 @@ Saving
 
 Press S or s to write the current bank to the original input filename.
 
-It is recommended to keep a backup copy of important soundbanks before
-editing. The save operation writes the binary BNK file directly.
+The whole file is kept in memory and edits are made to the bytes where
+they live, so the header, offsets, table order, shared or unused data
+records and any trailing bytes are written back unchanged.
+
+Saving writes a temporary file next to the bank and renames it over the
+original only when everything was written, so a failed save (full disk,
+no permission) leaves the original file intact. File permissions are kept
+and symbolic links are followed rather than replaced.
+
+Keeping a backup copy of important soundbanks is still recommended.
 
 
 Preview
@@ -103,7 +121,8 @@ Preview
 The preview function converts the selected instrument's 30 raw BNK
 parameter bytes to hexadecimal and invokes:
 
-    opl2play -r <instrument-data> -n 60 -d 1000
+    mop -r <instrument-data> -n 60 -d 1000             (note)
+    mop -r <instrument-data> -n "60,64,67" -d 1500     (chord)
 
 The preview uses the edited in-memory values, so parameter changes can be
 heard immediately.
@@ -134,6 +153,27 @@ including:
 Some fields have format-specific meanings. Raw values are therefore shown
 and retained where appropriate.
 
+Each name entry points at a data record by index (the REC column). The
+entries do not have to be in record order, and several entries may share
+one record; editing a shared record affects every entry that uses it.
+
+Unusual or damaged banks are handled as follows:
+
+- Any number of entries (no fixed limit; tested with 15867).
+- A 20-byte header (name table directly after the offset fields,
+  without the 8 reserved bytes) is accepted as well as the usual 28.
+- Parameter values outside the OPL2 range are shown and kept as they
+  are; + only increases up to the range maximum.
+- A name table cut short by the end of the file is clamped to the
+  complete entries; a warning is shown in the status line.
+- Entries pointing at a data record beyond the end of the file are
+  listed as "missing data record" and are read-only.
+- Unused entries (flag byte 0) are shown dimmed.
+- Files without the "ADLIB-" signature, AdLib Gold BNK2 (OPL3) banks,
+  empty banks and banks whose name table lies outside the file are
+  refused with a message stating the reason. A failed load never
+  replaces the bank that is already open.
+
 
 Design goals
 ------------
@@ -152,13 +192,20 @@ xadlbank is intended to be:
 Building
 --------
 
-A typical dynamic build is:
+The file chooser in xfileselect/ is compiled into xadlbank.c directly,
+so only one source file is passed to the compiler.
+
+    make
+    make install            (installs to /usr/bin, override with BINDIR=)
+
+or by hand:
 
     gcc -O2 -Wall -Wextra -std=c99 xadlbank.c -lX11 -o xadlbank
 
-For a static build, use the appropriate static C library and X11
-development libraries available on the target system. Static linking
-requirements vary between glibc, uClibc, and musl systems.
+i386 targets are linked statically by default; use `make STATIC=` to
+build dynamically, or `make STATIC=-static` to force a static build on
+other targets. Static linking requirements vary between glibc, uClibc,
+and musl systems (e.g. -lxcb -lXau -lXdmcp may be needed).
 
 
 Status
