@@ -15,9 +15,9 @@ OBJS   = $(SRCS:.c=.o)
 TARGET = xadlbank
 
 # xadlbank.c includes the file chooser implementation directly
-DEPS   = xfileselect/xfileselect.c xfileselect/xfileselect.h
+DEPS   = xfileselect/xfileselect.c xfileselect/xfileselect.h xbmfont/xbmfont.h
 
-CFLAGS  += -Os -Wall -Wshadow -Wextra -pedantic --std=gnu99 -ffunction-sections -fdata-sections
+CFLAGS  += -Os -Wall -Wshadow -Wextra -pedantic --std=gnu99 -ffunction-sections -fdata-sections -I./xbmfont
 LDFLAGS += $(STATIC) -Wl,--gc-sections,--sort-common,-s
 LDLIBS  += -lX11
 

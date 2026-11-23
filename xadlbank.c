@@ -76,11 +76,23 @@
 
 #define WIN_WIDTH   800
 #define WIN_HEIGHT  600
-#define FONT_NAME   "fixed"
 
-#define FC_DEFAULT_WIDTH   400
+/* Text: xbmfont (xbmfont/), bitmap fonts built into the program, so xadlbank
+   looks the same on every X server. 6x13 looks like X's own "fixed" font;
+   PRETTYFONTS builds use 9x15 (the window is then made wide enough for it). */
+#define XBMFONT_IMPLEMENTATION
+#include "xbmfont.h"
+#ifdef PRETTYFONTS
+#include "fonts/xbf_fixed_9x15.h"
+#define TEXT_FONT   xbf_fixed_9x15
+#else
+#include "fonts/xbf_fixed_6x13.h"
+#define TEXT_FONT   xbf_fixed_6x13
+#endif
+
+#define FC_DEFAULT_WIDTH   400   /* for a 13 px font; grows with a bigger one */
 #define FC_DEFAULT_HEIGHT  500
-#define FC_FONT_NAME       "fixed"
+#define FC_FONT            TEXT_FONT
 
 #include "xfileselect/xfileselect.c"
 
@@ -632,24 +644,29 @@ static void load_status(const char *verb)
 /* Drawing                                                            */
 /* ------------------------------------------------------------------ */
 
-static void draw_text(Display *dpy, Drawable d, GC gc, int x, int y, const char *s)
+/* Text in the GC's foreground colour, ending in "..." if it would pass `right` */
+static void draw_text(Display *dpy, Drawable d, GC gc, const xbf_ctx *fs,
+                      int x, int y, int right, const char *s)
 {
-    XDrawString(dpy, d, gc, x, y, s, (int)strlen(s));
+    XGCValues v;
+
+    XGetGCValues(dpy, gc, GCForeground, &v);   /* Xlib's own copy: no round trip */
+    xbf_draw_fit((xbf_ctx *)fs, d, x, y, v.foreground, s, right - x, XBF_CUT_END);
 }
 
-static int line_height(const XFontStruct *fs)
+static int line_height(const xbf_ctx *fs)
 {
-    return fs->ascent + fs->descent + 4;
+    return xbf_line_height(fs) + 4;
 }
 
 /* Baseline of the first list row (shared by drawing and hit-testing). */
-static int list_first_row_y(const XFontStruct *fs)
+static int list_first_row_y(const xbf_ctx *fs)
 {
     return line_height(fs) * 2 + 16 + 6 + 14;
 }
 
 /* Baseline of the first inspector row. */
-static int insp_first_row_y(const XFontStruct *fs)
+static int insp_first_row_y(const xbf_ctx *fs)
 {
     return line_height(fs) * 2 + 16 + line_height(fs) + 6;
 }
@@ -669,7 +686,7 @@ typedef struct {
     unsigned long bg, fg, hi, sel, dim;
 } Palette;
 
-static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
+static void draw_ui(Display *dpy, Pixmap buf, GC gc, xbf_ctx *fs,
                     int width, int height, const Palette *pal)
 {
     int line_h = line_height(fs);
@@ -684,11 +701,11 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
     XSetForeground(dpy, gc, pal->sel);
     XFillRectangle(dpy, buf, gc, 0, 0, width, line_h * 2 + 6);
 
-    XSetForeground(dpy, gc, pal->hi);
     snprintf(str, sizeof(str), " xadlbank - %s %s",
              bank_is_loaded() ? g_bank.filepath : "(no bank)",
              g_bank.dirty ? "[MODIFIED]" : "");
-    draw_text(dpy, buf, gc, 10, fs->ascent + 4, str);
+    /* a long path is shortened in the middle, so [MODIFIED] stays visible */
+    xbf_draw_fit(fs, buf, 10, xbf_ascent(fs) + 4, pal->hi, str, width - 20, XBF_CUT_MIDDLE);
 
     XSetForeground(dpy, gc, pal->fg);
     snprintf(str, sizeof(str),
@@ -696,7 +713,7 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
              (unsigned)g_bank.count, (unsigned)g_bank.num_used,
              (unsigned)g_bank.ver_major, (unsigned)g_bank.ver_minor,
              g_mode == MODE_INSPECTOR ? "INSPECTOR" : "LIST");
-    draw_text(dpy, buf, gc, 10, line_h + fs->ascent + 2, str);
+    draw_text(dpy, buf, gc, fs, 10, line_h + xbf_ascent(fs) + 2, width - 10, str);
 
     y_start = line_h * 2 + 16;
 
@@ -711,12 +728,12 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
         snprintf(str, sizeof(str),
                  "%-*sREC     NAME      MOD LV AT DC SU RL  CAR LV AT DC SU RL  FB",
                  id_w + 2, "ID");
-        draw_text(dpy, buf, gc, 10, y_start, str);
+        draw_text(dpy, buf, gc, fs, 10, y_start, width - 10, str);
         XDrawLine(dpy, buf, gc, 10, y_start + 6, width - 10, y_start + 6);
 
         if (!bank_is_loaded()) {
             XSetForeground(dpy, gc, pal->fg);
-            draw_text(dpy, buf, gc, 10, first_y, "No bank loaded. Press L to load a .bnk file.");
+            draw_text(dpy, buf, gc, fs, 10, first_y, width - 10, "No bank loaded. Press L to load a .bnk file.");
         }
 
         visible_rows = (height - first_y - line_h * 2) / line_h;
@@ -739,7 +756,7 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
             /* Selection Box */
             if (idx == g_selected_inst) {
                 XSetForeground(dpy, gc, pal->sel);
-                XFillRectangle(dpy, buf, gc, 8, row_y - fs->ascent, width - 16, line_h);
+                XFillRectangle(dpy, buf, gc, 8, row_y - xbf_ascent(fs), width - 16, line_h);
                 XSetForeground(dpy, gc, pal->hi);
             } else if (!ins->has_data || !ins->flags) {
                 XSetForeground(dpy, gc, pal->dim);  /* missing or unused */
@@ -773,15 +790,15 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
                          id_w, idx, (unsigned)ins->data_index, show_name);
             }
 
-            draw_text(dpy, buf, gc, 10, row_y, str);
+            draw_text(dpy, buf, gc, fs, 10, row_y, width - 10, str);
         }
 
         /* Name Edit In-place Overlay */
         if (g_mode == MODE_EDIT_NAME && bank_is_loaded()) {
-            int cw = XTextWidth(fs, "M", 1);
+            int cw = xbf_char_width(fs);
             XSetForeground(dpy, gc, pal->hi);
             XDrawRectangle(dpy, buf, gc, 10 + cw * (id_w + 10) - 2,
-                           first_y + (g_selected_inst - g_scroll_offset) * line_h - fs->ascent,
+                           first_y + (g_selected_inst - g_scroll_offset) * line_h - xbf_ascent(fs),
                            cw * 10 + 4, line_h);
         }
 
@@ -799,7 +816,7 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
                  "=== INSPECTOR: Instrument #%03d [%s] (Record: %u, Flag: %u) ===",
                  g_selected_inst, inst_label(ins),
                  (unsigned)ins->data_index, (unsigned)ins->flags);
-        draw_text(dpy, buf, gc, 20, y_start, str);
+        draw_text(dpy, buf, gc, fs, 20, y_start, width - 10, str);
 
         /* Draw 30 parameters in 2 columns */
         for (p = 0; p < BNK_INST_SIZE; p++) {
@@ -808,7 +825,7 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
 
             if (p == g_selected_param) {
                 XSetForeground(dpy, gc, pal->sel);
-                XFillRectangle(dpy, buf, gc, cx - 4, cy - fs->ascent, (width / 2) - 30, line_h);
+                XFillRectangle(dpy, buf, gc, cx - 4, cy - xbf_ascent(fs), (width / 2) - 30, line_h);
                 XSetForeground(dpy, gc, pal->hi);
             } else {
                 XSetForeground(dpy, gc, pal->fg);
@@ -816,7 +833,7 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
 
             snprintf(str, sizeof(str), "[%02d] %-32s : 0x%02X (%3u)",
                      p, g_param_desc[p].label, ins->raw[p], ins->raw[p]);
-            draw_text(dpy, buf, gc, cx, cy, str);
+            draw_text(dpy, buf, gc, fs, cx, cy, cx - 4 + (width / 2) - 30, str);
         }
     }
 
@@ -827,18 +844,18 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, XFontStruct *fs,
     XSetForeground(dpy, gc, pal->hi);
     if (g_mode == MODE_EDIT_NAME) {
         snprintf(str, sizeof(str), "EDIT NAME: %s_  [ENTER] Commit  [ESC] Cancel", g_input_buf);
-        draw_text(dpy, buf, gc, 10, height - 30, str);
+        draw_text(dpy, buf, gc, fs, 10, height - 30, width - 10, str);
     } else {
-        draw_text(dpy, buf, gc, 10, height - 30, g_status_msg);
+        draw_text(dpy, buf, gc, fs, 10, height - 30, width - 10, g_status_msg);
     }
 
     /* Bottom line: Permanent key shortcuts */
     XSetForeground(dpy, gc, pal->fg);
     if (g_mode == MODE_INSPECTOR)
-        draw_text(dpy, buf, gc, 10, height - 8,
+        draw_text(dpy, buf, gc, fs, 10, height - 8, width - 10,
                   "INSPECTOR: [ARROWS] Select [+/-] Inc/Dec [p] Note [Shift+p] Chord [ESC] Back");
     else
-        draw_text(dpy, buf, gc, 10, height - 8,
+        draw_text(dpy, buf, gc, fs, 10, height - 8, width - 10,
                   "[l] Load  [UP/DOWN] Select  [ENTER] Inspect  [p] Note [Shift+p] Chord [n] Rename [s] Save [Q] Quit");
 }
 
@@ -888,11 +905,12 @@ int main(int argc, char *argv[])
     Display *dpy;
     int screen;
     Window root, win;
-    XFontStruct *fs = NULL;
-    int fs_loaded = 0;
+    xbf_ctx *fs = NULL;
     Palette pal;
     GC gc;
-    int win_w = WIN_WIDTH;
+    /* wide enough for the inspector's two columns of 50 characters
+       (each highlight box is width / 2 - 30 pixels) */
+    int win_w = 80 + 100 * TEXT_FONT.width > WIN_WIDTH ? 80 + 100 * TEXT_FONT.width : WIN_WIDTH;
     int win_h = WIN_HEIGHT;
     Pixmap backbuf;
     Atom wm_delete;
@@ -923,30 +941,13 @@ int main(int argc, char *argv[])
     screen = DefaultScreen(dpy);
     root = RootWindow(dpy, screen);
 
-#ifdef PRETTYFONTS
-    fs = XLoadQueryFont(dpy, "9x15");
-    if (!fs)
-        fprintf(stderr, "Warning: Could not load font '9x15'. Using '%s'\n", FONT_NAME);
-#endif
-    if (!fs)
-        fs = XLoadQueryFont(dpy, FONT_NAME);
-    fs_loaded = (fs != NULL);
-    if (!fs)
-        fs = XQueryFont(dpy, XGContextFromGC(DefaultGC(dpy, screen)));
-    if (!fs) {
-        fprintf(stderr, "Error: No usable fonts found on the system - closing.\n");
-        XCloseDisplay(dpy);
-        bnk_free(&g_bank);
-        return 1;
-    }
-
     pal.bg  = BlackPixel(dpy, screen);
     pal.fg  = WhitePixel(dpy, screen);
     pal.hi  = alloc_color(dpy, screen, "#00FFFF", pal.fg);  /* Cyan */
     pal.sel = alloc_color(dpy, screen, "#003366", pal.bg);  /* Dark Blue */
     pal.dim = alloc_color(dpy, screen, "#888888", pal.fg);  /* Gray */
 
-    win = XCreateSimpleWindow(dpy, root, 100, 100, WIN_WIDTH, WIN_HEIGHT, 1, pal.dim, pal.bg);
+    win = XCreateSimpleWindow(dpy, root, 100, 100, win_w, win_h, 1, pal.dim, pal.bg);
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask | ButtonPressMask);
     XStoreName(dpy, win, "xadlbank - OPL2 Soundbank Editor");
     XMapWindow(dpy, win);
@@ -954,8 +955,13 @@ int main(int argc, char *argv[])
     set_window_icon(dpy, win);
 
     gc = XCreateGC(dpy, win, 0, NULL);
-    if (fs_loaded)
-        XSetFont(dpy, gc, fs->fid);
+    fs = xbf_create(dpy, win, &TEXT_FONT, 1);
+    if (!fs) {
+        fprintf(stderr, "Error: Could not upload the font to the X server - closing.\n");
+        XCloseDisplay(dpy);
+        bnk_free(&g_bank);
+        return 1;
+    }
 
     backbuf = XCreatePixmap(dpy, win, win_w, win_h, DefaultDepth(dpy, screen));
 
@@ -1003,7 +1009,7 @@ int main(int argc, char *argv[])
             } else if (btn == Button1) {          /* Left Click */
                 if (g_mode == MODE_LIST) {
                     /* Align with the top edge of the selection rectangle */
-                    int y_table_top = list_first_row_y(fs) - fs->ascent;
+                    int y_table_top = list_first_row_y(fs) - xbf_ascent(fs);
 
                     if (my >= y_table_top && my < win_h - line_h * 2 - 8) {
                         int target_idx = g_scroll_offset + (my - y_table_top) / line_h;
@@ -1011,7 +1017,7 @@ int main(int argc, char *argv[])
                             g_selected_inst = target_idx;
                     }
                 } else if (g_mode == MODE_INSPECTOR) {
-                    int insp_y_top = insp_first_row_y(fs) - fs->ascent;
+                    int insp_y_top = insp_first_row_y(fs) - xbf_ascent(fs);
 
                     if (my >= insp_y_top) {
                         int row = (my - insp_y_top) / line_h;
@@ -1192,10 +1198,7 @@ int main(int argc, char *argv[])
 
     XFreePixmap(dpy, backbuf);
     XFreeGC(dpy, gc);
-    if (fs_loaded)
-        XFreeFont(dpy, fs);
-    else
-        XFreeFontInfo(NULL, fs, 1);
+    xbf_free(fs);
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
     bnk_free(&g_bank);

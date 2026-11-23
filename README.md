@@ -192,15 +192,24 @@ xadlbank is intended to be:
 Building
 --------
 
-The file chooser in xfileselect/ is compiled into xadlbank.c directly,
-so only one source file is passed to the compiler.
+The file chooser in xfileselect/ and the font library in xbmfont/ are
+compiled into xadlbank.c directly, so only one source file is passed to
+the compiler.
 
     make
     make install            (installs to /usr/bin, override with BINDIR=)
 
 or by hand:
 
-    gcc -O2 -Wall -Wextra -std=c99 xadlbank.c -lX11 -o xadlbank
+    gcc -O2 -Wall -Wextra -std=c99 -I./xbmfont xadlbank.c -lX11 -o xadlbank
+
+Text is drawn with fonts built into the program (xbmfont, bundled in
+xbmfont/: zlib licensed, the fonts are the public-domain X11 misc-fixed
+fonts), so xadlbank looks the same on every X server and needs no server
+fonts. The default is 6x13, which looks like X's own "fixed" font. For the
+larger 9x15 font (about 7 KB more; the window opens wider to fit it):
+
+    CFLAGS=-DPRETTYFONTS make
 
 i386 targets are linked statically by default; use `make STATIC=` to
 build dynamically, or `make STATIC=-static` to force a static build on
