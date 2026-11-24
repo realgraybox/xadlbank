@@ -88,6 +88,9 @@
 #else
 #include "fonts/xbf_fixed_6x13.h"
 #define TEXT_FONT   xbf_fixed_6x13
+#ifndef XADLBANK_SMALL_FONTS
+#include "fonts/xbf_fixed_10x20.h"   /* sharper text on large screens (about 17 KB) */
+#endif
 #endif
 
 #define FC_DEFAULT_WIDTH   400   /* for a 13 px font; grows with a bigger one */
@@ -654,21 +657,79 @@ static void draw_text(Display *dpy, Drawable d, GC gc, const xbf_ctx *fs,
     xbf_draw_fit((xbf_ctx *)fs, d, x, y, v.foreground, s, right - x, XBF_CUT_END);
 }
 
+/* ------------------------------------------------------------------ */
+/* Text size: on a large screen text and layout grow together          */
+/* ------------------------------------------------------------------ */
+/* The first size is the build's font (6x13, or 9x15 with PRETTYFONTS); the
+   layout's pixel measures are for it, and U(x) scales them to the current
+   size. The size follows the window unless chosen with Ctrl + '+' / '-'. */
+typedef struct { const xbf_font *font; int scale; } TextSize;
+static const TextSize g_sizes[] = {
+#if defined(PRETTYFONTS)
+    { &xbf_fixed_9x15, 1 }, { &xbf_fixed_9x15, 2 }, { &xbf_fixed_9x15, 3 },
+    { &xbf_fixed_9x15, 4 },
+#elif defined(XADLBANK_SMALL_FONTS)
+    { &xbf_fixed_6x13, 1 }, { &xbf_fixed_6x13, 2 }, { &xbf_fixed_6x13, 3 },
+    { &xbf_fixed_6x13, 4 }, { &xbf_fixed_6x13, 6 },
+#else
+    { &xbf_fixed_6x13, 1 }, { &xbf_fixed_10x20, 1 }, { &xbf_fixed_6x13, 2 },
+    { &xbf_fixed_10x20, 2 }, { &xbf_fixed_10x20, 3 }, { &xbf_fixed_10x20, 4 },
+#endif
+};
+#define N_SIZES ((int)(sizeof g_sizes / sizeof g_sizes[0]))
+static xbf_ctx *g_txt = NULL;
+static int g_size = -1;          /* index in g_sizes */
+static int g_size_manual = -1;   /* chosen with Ctrl +/-, or -1 = follow the window */
+static int g_unit = 13;          /* line height of the current size */
+static int g_base_w = WIN_WIDTH; /* the window width the layout is made for */
+#define SIZE_LINE(i) (g_sizes[i].font->height * g_sizes[i].scale)
+#define U(x) (((x) * g_unit + SIZE_LINE(0) / 2) / SIZE_LINE(0))
+
+/* The size to use: the chosen one, or the largest whose scaled base layout
+   (g_base_w x WIN_HEIGHT) fits the window */
+static int wanted_size(int w, int h)
+{
+    int i, best = 0;
+
+    if (g_size_manual >= 0) return g_size_manual;
+    for (i = 1; i < N_SIZES; i++)
+        if ((long)g_base_w * SIZE_LINE(i) <= (long)w * SIZE_LINE(0) &&
+            (long)WIN_HEIGHT * SIZE_LINE(i) <= (long)h * SIZE_LINE(0))
+            best = i;
+    return best;
+}
+
+/* Use size i (uploads its font when it changes); false if X refused it */
+static int set_size(Display *dpy, Drawable like, int i)
+{
+    xbf_ctx *t;
+
+    if (g_txt && i == g_size) return 1;
+    t = xbf_create(dpy, like, g_sizes[i].font, g_sizes[i].scale);
+    if (!t) return g_txt != NULL;
+    xbf_free(g_txt);
+    g_txt = t;
+    g_size = i;
+    g_unit = SIZE_LINE(i);
+    x11_filechooser_font(g_sizes[i].font, g_sizes[i].scale);   /* dialog matches */
+    return 1;
+}
+
 static int line_height(const xbf_ctx *fs)
 {
-    return xbf_line_height(fs) + 4;
+    return xbf_line_height(fs) + U(4);
 }
 
 /* Baseline of the first list row (shared by drawing and hit-testing). */
 static int list_first_row_y(const xbf_ctx *fs)
 {
-    return line_height(fs) * 2 + 16 + 6 + 14;
+    return line_height(fs) * 2 + U(16) + U(6) + U(14);
 }
 
 /* Baseline of the first inspector row. */
 static int insp_first_row_y(const xbf_ctx *fs)
 {
-    return line_height(fs) * 2 + 16 + line_height(fs) + 6;
+    return line_height(fs) * 2 + U(16) + line_height(fs) + U(6);
 }
 
 static unsigned long alloc_color(Display *dpy, int screen, const char *spec,
@@ -699,23 +760,24 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, xbf_ctx *fs,
 
     /* Header Bar */
     XSetForeground(dpy, gc, pal->sel);
-    XFillRectangle(dpy, buf, gc, 0, 0, width, line_h * 2 + 6);
+    XFillRectangle(dpy, buf, gc, 0, 0, width, line_h * 2 + U(6));
 
     snprintf(str, sizeof(str), " xadlbank - %s %s",
              bank_is_loaded() ? g_bank.filepath : "(no bank)",
              g_bank.dirty ? "[MODIFIED]" : "");
     /* a long path is shortened in the middle, so [MODIFIED] stays visible */
-    xbf_draw_fit(fs, buf, 10, xbf_ascent(fs) + 4, pal->hi, str, width - 20, XBF_CUT_MIDDLE);
+    xbf_draw_fit(fs, buf, U(10), xbf_ascent(fs) + U(4), pal->hi, str, width - U(20), XBF_CUT_MIDDLE);
 
     XSetForeground(dpy, gc, pal->fg);
     snprintf(str, sizeof(str),
-             " Instruments: %u  |  Used: %u  |  Version: %u.%u  |  Mode: %s",
+             " Instruments: %u  |  Used: %u  |  Version: %u.%u  |  Mode: %s  |  Size: %d%s [Ctrl +/-]",
              (unsigned)g_bank.count, (unsigned)g_bank.num_used,
              (unsigned)g_bank.ver_major, (unsigned)g_bank.ver_minor,
-             g_mode == MODE_INSPECTOR ? "INSPECTOR" : "LIST");
-    draw_text(dpy, buf, gc, fs, 10, line_h + xbf_ascent(fs) + 2, width - 10, str);
+             g_mode == MODE_INSPECTOR ? "INSPECTOR" : "LIST",
+             g_size + 1, g_size_manual >= 0 ? "" : " (auto)");
+    draw_text(dpy, buf, gc, fs, U(10), line_h + xbf_ascent(fs) + U(2), width - U(10), str);
 
-    y_start = line_h * 2 + 16;
+    y_start = line_h * 2 + U(16);
 
     if (g_mode == MODE_LIST || g_mode == MODE_EDIT_NAME) {
         int first_y = list_first_row_y(fs);
@@ -728,12 +790,12 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, xbf_ctx *fs,
         snprintf(str, sizeof(str),
                  "%-*sREC     NAME      MOD LV AT DC SU RL  CAR LV AT DC SU RL  FB",
                  id_w + 2, "ID");
-        draw_text(dpy, buf, gc, fs, 10, y_start, width - 10, str);
-        XDrawLine(dpy, buf, gc, 10, y_start + 6, width - 10, y_start + 6);
+        draw_text(dpy, buf, gc, fs, U(10), y_start, width - U(10), str);
+        XFillRectangle(dpy, buf, gc, U(10), y_start + U(6), width - 2 * U(10) + 1, U(1));
 
         if (!bank_is_loaded()) {
             XSetForeground(dpy, gc, pal->fg);
-            draw_text(dpy, buf, gc, fs, 10, first_y, width - 10, "No bank loaded. Press L to load a .bnk file.");
+            draw_text(dpy, buf, gc, fs, U(10), first_y, width - U(10), "No bank loaded. Press L to load a .bnk file.");
         }
 
         visible_rows = (height - first_y - line_h * 2) / line_h;
@@ -756,7 +818,7 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, xbf_ctx *fs,
             /* Selection Box */
             if (idx == g_selected_inst) {
                 XSetForeground(dpy, gc, pal->sel);
-                XFillRectangle(dpy, buf, gc, 8, row_y - xbf_ascent(fs), width - 16, line_h);
+                XFillRectangle(dpy, buf, gc, U(8), row_y - xbf_ascent(fs), width - U(16), line_h);
                 XSetForeground(dpy, gc, pal->hi);
             } else if (!ins->has_data || !ins->flags) {
                 XSetForeground(dpy, gc, pal->dim);  /* missing or unused */
@@ -790,23 +852,26 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, xbf_ctx *fs,
                          id_w, idx, (unsigned)ins->data_index, show_name);
             }
 
-            draw_text(dpy, buf, gc, fs, 10, row_y, width - 10, str);
+            draw_text(dpy, buf, gc, fs, U(10), row_y, width - U(10), str);
         }
 
         /* Name Edit In-place Overlay */
         if (g_mode == MODE_EDIT_NAME && bank_is_loaded()) {
             int cw = xbf_char_width(fs);
+            int lw = U(1);
             XSetForeground(dpy, gc, pal->hi);
-            XDrawRectangle(dpy, buf, gc, 10 + cw * (id_w + 10) - 2,
+            XSetLineAttributes(dpy, gc, lw > 1 ? lw : 0, LineSolid, CapButt, JoinMiter);
+            XDrawRectangle(dpy, buf, gc, U(10) + cw * (id_w + 10) - U(2),
                            first_y + (g_selected_inst - g_scroll_offset) * line_h - xbf_ascent(fs),
-                           cw * 10 + 4, line_h);
+                           cw * 10 + U(4), line_h);
+            XSetLineAttributes(dpy, gc, 0, LineSolid, CapButt, JoinMiter);
         }
 
     } else if (g_mode == MODE_INSPECTOR && bank_is_loaded()) {
         /* Modal Instrument Inspector */
         Instrument *ins = &g_bank.inst[g_selected_inst];
-        int col1_x = 30;
-        int col2_x = width / 2 + 10;
+        int col1_x = U(30);
+        int col2_x = width / 2 + U(10);
         int row_count = 15;
         int first_y = insp_first_row_y(fs);
         int p;
@@ -816,7 +881,7 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, xbf_ctx *fs,
                  "=== INSPECTOR: Instrument #%03d [%s] (Record: %u, Flag: %u) ===",
                  g_selected_inst, inst_label(ins),
                  (unsigned)ins->data_index, (unsigned)ins->flags);
-        draw_text(dpy, buf, gc, fs, 20, y_start, width - 10, str);
+        draw_text(dpy, buf, gc, fs, U(20), y_start, width - U(10), str);
 
         /* Draw 30 parameters in 2 columns */
         for (p = 0; p < BNK_INST_SIZE; p++) {
@@ -825,7 +890,7 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, xbf_ctx *fs,
 
             if (p == g_selected_param) {
                 XSetForeground(dpy, gc, pal->sel);
-                XFillRectangle(dpy, buf, gc, cx - 4, cy - xbf_ascent(fs), (width / 2) - 30, line_h);
+                XFillRectangle(dpy, buf, gc, cx - U(4), cy - xbf_ascent(fs), (width / 2) - U(30), line_h);
                 XSetForeground(dpy, gc, pal->hi);
             } else {
                 XSetForeground(dpy, gc, pal->fg);
@@ -833,29 +898,29 @@ static void draw_ui(Display *dpy, Pixmap buf, GC gc, xbf_ctx *fs,
 
             snprintf(str, sizeof(str), "[%02d] %-32s : 0x%02X (%3u)",
                      p, g_param_desc[p].label, ins->raw[p], ins->raw[p]);
-            draw_text(dpy, buf, gc, fs, cx, cy, cx - 4 + (width / 2) - 30, str);
+            draw_text(dpy, buf, gc, fs, cx, cy, cx - U(4) + (width / 2) - U(30), str);
         }
     }
 
     /* Footer / Status Bar */
     XSetForeground(dpy, gc, pal->dim);
-    XDrawLine(dpy, buf, gc, 0, height - line_h - 8, width, height - line_h - 8);
+    XFillRectangle(dpy, buf, gc, 0, height - line_h - U(8), width, U(1));
 
     XSetForeground(dpy, gc, pal->hi);
     if (g_mode == MODE_EDIT_NAME) {
         snprintf(str, sizeof(str), "EDIT NAME: %s_  [ENTER] Commit  [ESC] Cancel", g_input_buf);
-        draw_text(dpy, buf, gc, fs, 10, height - 30, width - 10, str);
+        draw_text(dpy, buf, gc, fs, U(10), height - U(30), width - U(10), str);
     } else {
-        draw_text(dpy, buf, gc, fs, 10, height - 30, width - 10, g_status_msg);
+        draw_text(dpy, buf, gc, fs, U(10), height - U(30), width - U(10), g_status_msg);
     }
 
     /* Bottom line: Permanent key shortcuts */
     XSetForeground(dpy, gc, pal->fg);
     if (g_mode == MODE_INSPECTOR)
-        draw_text(dpy, buf, gc, fs, 10, height - 8, width - 10,
+        draw_text(dpy, buf, gc, fs, U(10), height - U(8), width - U(10),
                   "INSPECTOR: [ARROWS] Select [+/-] Inc/Dec [p] Note [Shift+p] Chord [ESC] Back");
     else
-        draw_text(dpy, buf, gc, fs, 10, height - 8, width - 10,
+        draw_text(dpy, buf, gc, fs, U(10), height - U(8), width - U(10),
                   "[l] Load  [UP/DOWN] Select  [ENTER] Inspect  [p] Note [Shift+p] Chord [n] Rename [s] Save [Q] Quit");
 }
 
@@ -955,13 +1020,14 @@ int main(int argc, char *argv[])
     set_window_icon(dpy, win);
 
     gc = XCreateGC(dpy, win, 0, NULL);
-    fs = xbf_create(dpy, win, &TEXT_FONT, 1);
-    if (!fs) {
+    g_base_w = win_w;
+    if (!set_size(dpy, win, wanted_size(win_w, win_h))) {
         fprintf(stderr, "Error: Could not upload the font to the X server - closing.\n");
         XCloseDisplay(dpy);
         bnk_free(&g_bank);
         return 1;
     }
+    fs = g_txt;
 
     backbuf = XCreatePixmap(dpy, win, win_w, win_h, DefaultDepth(dpy, screen));
 
@@ -1011,7 +1077,7 @@ int main(int argc, char *argv[])
                     /* Align with the top edge of the selection rectangle */
                     int y_table_top = list_first_row_y(fs) - xbf_ascent(fs);
 
-                    if (my >= y_table_top && my < win_h - line_h * 2 - 8) {
+                    if (my >= y_table_top && my < win_h - line_h * 2 - U(8)) {
                         int target_idx = g_scroll_offset + (my - y_table_top) / line_h;
                         if (target_idx >= 0 && target_idx < (int)g_bank.count)
                             g_selected_inst = target_idx;
@@ -1041,7 +1107,18 @@ int main(int argc, char *argv[])
             text[len] = '\0';
             need_redraw = 1;
 
-            if (g_mode == MODE_EDIT_NAME) {
+            /* Ctrl + '+' / '-': bigger / smaller text; Ctrl + 0: follow the window.
+               Checked first: plain +/- change values in the inspector. */
+            if ((ev.xkey.state & ControlMask) &&
+                (ks == XK_plus || ks == XK_equal || ks == XK_KP_Add)) {
+                g_size_manual = g_size < N_SIZES - 1 ? g_size + 1 : g_size;
+            } else if ((ev.xkey.state & ControlMask) &&
+                       (ks == XK_minus || ks == XK_KP_Subtract)) {
+                g_size_manual = g_size > 0 ? g_size - 1 : 0;
+            } else if ((ev.xkey.state & ControlMask) &&
+                       (ks == XK_0 || ks == XK_KP_0 || ks == XK_KP_Insert)) {
+                g_size_manual = -1;
+            } else if (g_mode == MODE_EDIT_NAME) {
                 if (ks == XK_Return || ks == XK_KP_Enter) {
                     Instrument *ins = &g_bank.inst[g_selected_inst];
                     char prefill[BNK_NAME_VISIBLE_MAX + 1];
@@ -1190,6 +1267,8 @@ int main(int argc, char *argv[])
         clamp_selection();
 
         if (need_redraw && running) {
+            set_size(dpy, win, wanted_size(win_w, win_h));
+            fs = g_txt;
             draw_ui(dpy, backbuf, gc, fs, win_w, win_h, &pal);
             XCopyArea(dpy, backbuf, win, gc, 0, 0, win_w, win_h, 0, 0);
             XFlush(dpy);
@@ -1198,7 +1277,7 @@ int main(int argc, char *argv[])
 
     XFreePixmap(dpy, backbuf);
     XFreeGC(dpy, gc);
-    xbf_free(fs);
+    xbf_free(g_txt);
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
     bnk_free(&g_bank);

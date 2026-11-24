@@ -71,6 +71,8 @@ Basic controls
     S / s           Save the bank
     Q / q           Quit
     Esc             Cancel editing, return from the inspector, or quit
+    Ctrl + / -      Bigger / smaller text (also keypad + / -)
+    Ctrl 0          Text size follows the window again (default)
 
 Mouse:
 
@@ -206,10 +208,16 @@ or by hand:
 Text is drawn with fonts built into the program (xbmfont, bundled in
 xbmfont/: zlib licensed, the fonts are the public-domain X11 misc-fixed
 fonts), so xadlbank looks the same on every X server and needs no server
-fonts. The default is 6x13, which looks like X's own "fixed" font. For the
-larger 9x15 font (about 7 KB more; the window opens wider to fit it):
+fonts. The default is 6x13, which looks like X's own "fixed" font.
 
-    CFLAGS=-DPRETTYFONTS make
+The text and layout grow with the window: the largest size whose scaled
+base layout fits is used (a 1920x1080 window gets the 10x20 font, larger
+ones both doubled, tripled ...), and Ctrl + / - choose another size. The
+header shows the size.
+
+    make PRETTYFONTS=1      the 9x15 font as base size (the window opens
+                            wider to fit it); scaled x2, x3, x4
+    make SMALL_FONTS=1      only 6x13 (scaled x2, x3 ...), about 17 KB smaller
 
 i386 targets are linked statically by default; use `make STATIC=` to
 build dynamically, or `make STATIC=-static` to force a static build on

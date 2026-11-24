@@ -19,6 +19,15 @@ DEPS   = xfileselect/xfileselect.c xfileselect/xfileselect.h xbmfont/xbmfont.h
 
 CFLAGS  += -Os -Wall -Wshadow -Wextra -pedantic --std=gnu99 -ffunction-sections -fdata-sections -I./xbmfont
 LDFLAGS += $(STATIC) -Wl,--gc-sections,--sort-common,-s
+
+# make PRETTYFONTS=1 : the 9x15 font (scaled x2, x3, x4 on large screens)
+# make SMALL_FONTS=1 : only 6x13 (scaled on large screens), about 17 KB smaller
+ifeq ($(PRETTYFONTS),1)
+CFLAGS  += -DPRETTYFONTS
+endif
+ifeq ($(SMALL_FONTS),1)
+CFLAGS  += -DXADLBANK_SMALL_FONTS
+endif
 LDLIBS  += -lX11
 
 .PHONY: all clean install
